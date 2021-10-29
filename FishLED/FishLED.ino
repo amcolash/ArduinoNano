@@ -22,6 +22,7 @@ struct Section {
 
 enum Mode {
   Standard,
+  RainbowPastel,
   Rainbow,
 
   ModeLength
@@ -70,6 +71,7 @@ unsigned long startMS = millis();
 
 // Skip this many cycles
 int delayCount = 0;
+uint16_t rainbowCycle;
 
 /* Main code */
 
@@ -93,6 +95,7 @@ void loop() {
     }
 
     delayCount = max(0, delayCount - 1);
+    rainbowCycle += 1000;
   }
 }
 
@@ -131,23 +134,45 @@ void updateSection(uint8_t sectionIndex) {
   Section *section = &sections[sectionIndex];
 
   if (delayCount == 0) {
-    if (section->skipTime == 0) {
-      float factor = max(cos(millis() / section->frequency), 0);
-      insert(section->colors, section->NUM_PIXELS, Color(section->color[0] * factor, section->color[1] * factor, section->color[2] * factor));
+    if (mode == Rainbow) {
+      // Offset the hue based on physical position so that everything lines up nicely
+      uint16_t offset;
+  
+      switch(sectionIndex) {
+        case 1:
+        case 3:
+        default:
+          offset = 0;
+          break;
+        case 0:
+          offset = 10000;
+          break;
+        case 2:
+          offset = 15000;
+          break;
+      }
+  
+      uint32_t color = ColorHSV(rainbowCycle + offset, 255, 48);
+      insert(section->colors, section->NUM_PIXELS, color);
     } else {
-      insert(section->colors, section->NUM_PIXELS, Color(0, 0, 0));
-    }
-  
-    section->skipTime = max(0, section->skipTime - 1);
-    section->count++;
+      if (section->skipTime == 0) {
+        float factor = max(cos(millis() / section->frequency), 0);
+        insert(section->colors, section->NUM_PIXELS, Color(section->color[0] * factor, section->color[1] * factor, section->color[2] * factor));
+      } else {
+        insert(section->colors, section->NUM_PIXELS, Color(0, 0, 0));
+      }
     
-    if (section->count > section->randomCount) {
-      section->count = 0;
-      section->frequency = generateFrequency(section->NUM_PIXELS);
-  
-      randomColor(section->color);
-      section->randomCount = generateRandomCount();
-      section->skipTime = generateSkipTime();
+      section->skipTime = max(0, section->skipTime - 1);
+      section->count++;
+      
+      if (section->count > section->randomCount) {
+        section->count = 0;
+        section->frequency = generateFrequency(section->NUM_PIXELS);
+    
+        randomColor(section->color);
+        section->randomCount = generateRandomCount();
+        section->skipTime = generateSkipTime();
+      }
     }
   }
 
@@ -181,8 +206,11 @@ void updateButtons() {
       case Standard:
         color = Color(0, 70, 40);
         break;
-      case Rainbow:
+      case RainbowPastel:
         color = Color(70, 30, 30);
+        break;
+      case Rainbow:
+        color = Color(80, 50, 0);
         break;
     }
 
@@ -197,7 +225,7 @@ void updateButtons() {
 
 float generateFrequency(uint8_t NUM_PIXELS) {
   switch(mode) {
-    case Rainbow:
+    case RainbowPastel:
       return (float) random(200 * (NUM_PIXELS / 12.)) + 100;
     default:
       return (float) random(400 * (NUM_PIXELS / 12.)) + 100;
@@ -206,7 +234,7 @@ float generateFrequency(uint8_t NUM_PIXELS) {
 
 int generateRandomCount() {
   switch(mode) {
-    case Rainbow:
+    case RainbowPastel:
       return random(50) + 20;
     default:
       return random(100) + 20;
@@ -215,7 +243,7 @@ int generateRandomCount() {
 
 int generateSkipTime() {
   switch(mode) {
-    case Rainbow:
+    case RainbowPastel:
       return random(20);
     default:
       return random(100);
@@ -224,7 +252,7 @@ int generateSkipTime() {
 
 void randomColor(uint8_t arr[]) {
   switch(mode) {
-    case Rainbow:
+    case RainbowPastel:
       arr[0] = random(80);
       arr[1] = random(80);
       arr[2] = random(80);
@@ -261,4 +289,70 @@ uint32_t Color(byte r, byte b, byte g)
   c <<= 8;
   c |= b;
   return c;
+}
+
+//Input a value 0 to 255 to get a color value.
+//The colours are a transition r - g -b - back to r
+uint32_t Wheel(byte WheelPos, float max)
+{
+  if (WheelPos < 85) {
+   return Color(WheelPos * 3 * max, 255 - WheelPos * 3 * max, 0);
+  } else if (WheelPos < 170) {
+   WheelPos -= 85;
+   return Color(255 - WheelPos * 3 * max, 0, WheelPos * 3 * max);
+  } else {
+   WheelPos -= 170; 
+   return Color(0, WheelPos * 3 * max, 255 - WheelPos * 3 * max);
+  }
+}
+
+
+// Code from megaTinyCore: https://github.com/SpenceKonde/megaTinyCore/blob/master/megaavr/libraries/tinyNeoPixel_Static/tinyNeoPixel_Static.cpp
+uint32_t ColorHSV(uint16_t hue, uint8_t sat, uint8_t val) {
+
+  uint8_t r, g, b;
+
+  // Remap 0-65535 to 0-1529.
+  hue = (hue * 1530L + 32768) / 65536;
+
+  // Convert hue to R,G,B (nested ifs faster than divide+mod+switch):
+  if (hue < 510) {         // Red to Green-1
+    b = 0;
+    if (hue < 255) {       //   Red to Yellow-1
+      r = 255;
+      g = hue;            //     g = 0 to 254
+    } else {              //   Yellow to Green-1
+      r = 510 - hue;      //     r = 255 to 1
+      g = 255;
+    }
+  } else if (hue < 1020) { // Green to Blue-1
+    r = 0;
+    if (hue <  765) {      //   Green to Cyan-1
+      g = 255;
+      b = hue - 510;      //     b = 0 to 254
+    } else {              //   Cyan to Blue-1
+      g = 1020 - hue;     //     g = 255 to 1
+      b = 255;
+    }
+  } else if (hue < 1530) { // Blue to Red-1
+    g = 0;
+    if (hue < 1275) {      //   Blue to Magenta-1
+      r = hue - 1020;     //     r = 0 to 254
+      b = 255;
+    } else {              //   Magenta to Red-1
+      r = 255;
+      b = 1530 - hue;     //     b = 255 to 1
+    }
+  } else {                // Last 0.5 Red (quicker than % operator)
+    r = 255;
+    g = b = 0;
+  }
+
+  // Apply saturation and value to R,G,B, pack into 32-bit result:
+  uint32_t v1 =   1 + val; // 1 to 256; allows >>8 instead of /255
+  uint16_t s1 =   1 + sat; // 1 to 256; same reason
+  uint8_t  s2 = 255 - sat; // 255 to 0
+  return ((((((r * s1) >> 8) + s2) * v1) & 0xff00) << 8) |
+          (((((g * s1) >> 8) + s2) * v1) & 0xff00)       |
+          (((((b * s1) >> 8) + s2) * v1)           >> 8);
 }
