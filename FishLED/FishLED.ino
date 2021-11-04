@@ -152,7 +152,7 @@ void updateSection(uint8_t sectionIndex) {
           break;
       }
   
-      uint32_t color = ColorHSV(rainbowCycle + offset, 255, 48);
+      uint32_t color = ColorHSV(rainbowCycle + offset, 255, 90);
       insert(section->colors, section->NUM_PIXELS, color);
     } else {
       if (section->skipTime == 0) {
@@ -226,9 +226,9 @@ void updateButtons() {
 float generateFrequency(uint8_t NUM_PIXELS) {
   switch(mode) {
     case RainbowPastel:
-      return (float) random(200 * (NUM_PIXELS / 12.)) + 100;
+      return (float) random(150 / (NUM_PIXELS / 12.)) + 100;
     default:
-      return (float) random(400 * (NUM_PIXELS / 12.)) + 100;
+      return (float) random(300 / (NUM_PIXELS / 12.)) + 100;
   }
 }
 
@@ -246,21 +246,21 @@ int generateSkipTime() {
     case RainbowPastel:
       return random(20);
     default:
-      return random(100);
+      return random(60);
   }
 }
 
 void randomColor(uint8_t arr[]) {
   switch(mode) {
     case RainbowPastel:
-      arr[0] = random(80);
-      arr[1] = random(80);
-      arr[2] = random(80);
+      arr[0] = random(140);
+      arr[1] = random(140);
+      arr[2] = random(140);
       break;
     default:
       arr[0] = 0;
-      arr[1] = random(20) + 50;
-      arr[2] = random(30) + 10;
+      arr[1] = random(40) + 160;
+      arr[2] = random(50) + 120;
       break;
   }
 }
