@@ -1,7 +1,6 @@
 #include <DigitalIO.h>
 #include <PsxControllerBitBang.h>
 #include <SPI.h>
-#include <Watchdog.h>
 
 #define DEBUG_PRINT true
 
@@ -29,29 +28,25 @@ byte lx, ly, rx, ry;
 
 bool haveController = false;
 
-Watchdog watchdog;
-
 long timer;
 bool turboX;
 
 bool readingCard = false;
+unsigned long readingTimer;
 
 ISR (SPI_STC_vect) {
   byte cmd = SPDR;
 
+  // Turn off output when card starts being read
   if (cmd == 0x81) {
-    printByte(cmd);
-
-    Serial.println("READING CARD");
-    
-//    lastCmd = cmd;
-//    SPDR = 0xFF;
-
-    readingCard = true;
-    
-    return;
+    disableOutput();
+  } else if (cmd == 0x52 || cmd == 0x00) {
+    // Keep resetting the read timer while card continues to be read
+    // Later on we will turn output back on 2ms after last read in loop()
+    readingTimer = micros();
   }
 
+  // Never go here when card is being accessed
   if (readingCard) return;
 
   willAck = dataBufferIndex < DATA_BUFFER_SIZE;
@@ -92,6 +87,23 @@ ISR (SPI_STC_vect) {
   dataBufferIndex = constrain(dataBufferIndex + 1, 0, DATA_BUFFER_SIZE);
 }
 
+// Disable output to MISO/ACK while card is being accessed
+void disableOutput() {
+  fastPinMode(MISO, INPUT);
+  fastPinMode(ACK_PIN, INPUT);
+  
+  readingCard = true;
+}
+
+// Renable input after card read
+void enableOutput() {
+  fastPinMode(MISO, OUTPUT);
+  fastPinMode(ACK_PIN, OUTPUT);
+  fastDigitalWrite(ACK_PIN, HIGH);
+  
+  readingCard = false;
+}
+
 void clearBuffer() {
   for (uint8_t i; i < DATA_BUFFER_SIZE; i++) {
     dataBuffer[i] = 0xFF;
@@ -130,8 +142,6 @@ void setup (void) {
   // Clear MISO to begin with
   SPDR = 0xFF;
 
-  watchdog.enable(Watchdog::TIMEOUT_2S); // If SPI hangs, just restart
-  
   Serial.println("All Set");
 }
 
@@ -204,5 +214,8 @@ void loop (void) {
   updateController();
   updateTimer();
 
-  watchdog.reset();
+  // If card was being read and we haven't seen activity in 2ms, re-enable output to the bus
+  if (readingCard && micros() - readingTimer > 2000) {
+    enableOutput();
+  }
 }
