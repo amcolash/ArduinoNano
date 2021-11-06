@@ -38,18 +38,19 @@ ISR (SPI_STC_vect) {
   byte cmd = SPDR;
 
   // Turn off output when card starts being read
-  if (cmd == 0x81) {
+  if (!readingCard && (cmd == 0x52 || cmd == 0x57 || cmd == 0x81)) {
     disableOutput();
-  } else if (cmd == 0x52 || cmd == 0x00) {
+  } else if (readingCard && !(cmd == 0x01 || cmd == 0x42)) {
     // Keep resetting the read timer while card continues to be read
     // Later on we will turn output back on 2ms after last read in loop()
     readingTimer = micros();
   }
-
-  // Never go here when card is being accessed
+  
+  // Never go further when card is being accessed
   if (readingCard) return;
 
-  willAck = dataBufferIndex < DATA_BUFFER_SIZE;
+  SPDR = 0xFF;
+
   if (cmd == 0x01) {
     clearBuffer();
     dataBuffer[0] = 0x73;
@@ -70,19 +71,19 @@ ISR (SPI_STC_vect) {
     clearBuffer();
     willAck = false;
 
+    Serial.print("Unknown command: ");
     printByte(cmd);
+    return;
   }
 
   // ACK
-  if (willAck) {
+  if (dataBufferIndex < DATA_BUFFER_SIZE) {
     fastDigitalWrite(ACK_PIN, LOW);
     delayMicroseconds(3);
     fastDigitalWrite(ACK_PIN, HIGH);
   }
 
-  SPDR = dataBuffer[dataBufferIndex];
-
-  if (dataBufferIndex >= DATA_BUFFER_SIZE) SPDR = 0xFF;
+  if (dataBufferIndex < DATA_BUFFER_SIZE) SPDR = dataBuffer[dataBufferIndex];
 
   dataBufferIndex = constrain(dataBufferIndex + 1, 0, DATA_BUFFER_SIZE);
 }
@@ -93,6 +94,7 @@ void disableOutput() {
   fastPinMode(ACK_PIN, INPUT);
   
   readingCard = true;
+  readingTimer = micros() + 5000; // Add some buffer since the init of the memory card can take a moment
 }
 
 // Renable input after card read
@@ -193,11 +195,6 @@ void updateButtons() {
 
 void updateTimer() {
   if (~buttons & PSB_L2) {
-    if (DEBUG_PRINT) {
-      Serial.println("TIMER");
-      printButtons();
-    }
-    
     if (millis() - timer > 80) {
       turboX = !turboX;
       timer = millis();
@@ -214,8 +211,8 @@ void loop (void) {
   updateController();
   updateTimer();
 
-  // If card was being read and we haven't seen activity in 2ms, re-enable output to the bus
-  if (readingCard && micros() - readingTimer > 2000) {
+  // If card was being read and we haven't seen activity in 5ms, re-enable output to the bus
+  if (readingCard && micros() - readingTimer > 4000) {
     enableOutput();
   }
 }
