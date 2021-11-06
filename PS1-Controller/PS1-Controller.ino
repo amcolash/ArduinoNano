@@ -3,6 +3,8 @@
 #include <SPI.h>
 #include <Watchdog.h>
 
+#define DEBUG_PRINT true
+
 #define LED_PIN 2
 #define READY_PIN 3
 
@@ -17,6 +19,11 @@
 
 PsxControllerBitBang<ATT_PIN, CMD_PIN, DAT_PIN, CLK_PIN> psx;
 
+#define DATA_BUFFER_SIZE 7
+byte dataBuffer[DATA_BUFFER_SIZE];
+uint8_t dataBufferIndex = 0;
+bool willAck = false;
+
 uint16_t buttons;
 byte lx, ly, rx, ry;
 
@@ -26,6 +33,72 @@ Watchdog watchdog;
 
 long timer;
 bool turboX;
+
+bool readingCard = false;
+
+ISR (SPI_STC_vect) {
+  byte cmd = SPDR;
+
+  if (cmd == 0x81) {
+    printByte(cmd);
+
+    Serial.println("READING CARD");
+    
+//    lastCmd = cmd;
+//    SPDR = 0xFF;
+
+    readingCard = true;
+    
+    return;
+  }
+
+  if (readingCard) return;
+
+  willAck = dataBufferIndex < DATA_BUFFER_SIZE;
+  if (cmd == 0x01) {
+    clearBuffer();
+    dataBuffer[0] = 0x73;
+    
+    willAck = true;
+  } else if (cmd == 0x42) {
+    dataBuffer[0] = 0x5A;
+    dataBuffer[1] = (buttons << 8) >> 8;
+    dataBuffer[2] = buttons >> 8;
+    dataBuffer[3] = rx;
+    dataBuffer[4] = ry;
+    dataBuffer[5] = lx;
+    dataBuffer[6] = ly;
+
+    dataBufferIndex = 0;
+    willAck = true;
+  } else if (cmd != 0x00) {
+    clearBuffer();
+    willAck = false;
+
+    printByte(cmd);
+  }
+
+  // ACK
+  if (willAck) {
+    fastDigitalWrite(ACK_PIN, LOW);
+    delayMicroseconds(3);
+    fastDigitalWrite(ACK_PIN, HIGH);
+  }
+
+  SPDR = dataBuffer[dataBufferIndex];
+
+  if (dataBufferIndex >= DATA_BUFFER_SIZE) SPDR = 0xFF;
+
+  dataBufferIndex = constrain(dataBufferIndex + 1, 0, DATA_BUFFER_SIZE);
+}
+
+void clearBuffer() {
+  for (uint8_t i; i < DATA_BUFFER_SIZE; i++) {
+    dataBuffer[i] = 0xFF;
+  }
+
+  dataBufferIndex = 0;
+}
 
 void setup (void) {
   Serial.begin (115200);
@@ -54,39 +127,18 @@ void setup (void) {
   // turn on SPI in slave mode
   SPCR = _BV(SPE) | _BV(DORD) | _BV(SPR0) | ~_BV(MSTR);
 
-  SPI.detachInterrupt(); // This causes issues if not actually using interrupt (we are polling)
+  // Clear MISO to begin with
+  SPDR = 0xFF;
 
   watchdog.enable(Watchdog::TIMEOUT_2S); // If SPI hangs, just restart
   
   Serial.println("All Set");
 }
 
-byte sendByte(byte b) {
-  return sendByte(b, true);
-}
-
-byte sendByte(byte b, bool sendAck) {
-  fastDigitalWrite(READY_PIN, HIGH);
-  byte ret = SPI.transfer(b);
-  fastDigitalWrite(READY_PIN, LOW);
-  
-  if (sendAck &&
-    ret != 0x43 &&
-    ret != 0x81) ack();
-  
-  return ret;
-}
-
-void ack() {
-  delayMicroseconds(8); // Need to wait for last clock pulse before acking
-  fastDigitalWrite(ACK_PIN, LOW);
-//  delayMicroseconds(2);
-  micros();
-  fastDigitalWrite(ACK_PIN, HIGH);
-}
-
 // From https://forum.arduino.cc/t/printing-binary/437864/2
 void printByte(byte b) {
+  if (!DEBUG_PRINT) return;
+  
   for (int i = 7; i >= 0; i--)
   {
     if (i == 3) Serial.print(" ");
@@ -96,48 +148,6 @@ void printByte(byte b) {
   Serial.print("\t[0x");
   Serial.print(b, HEX);
   Serial.println("]");
-}
-
-void updateCmd() {
-  // Get next command
-  byte cmd = sendByte(0xFF);
-  
-  // Only proceed if we are starting with a "controller" command (excluding memory card w/ command 0x81)
-  if (cmd != 0x01 || fastDigitalRead(SS)) return;
-
-  // We are an analog dualshock controller
-  cmd = sendByte(0x73);
-  
-  switch(cmd) {
-    case 0x42: // Poll Buttons
-      cmd = sendByte(0x5A); // Tell PS1 we are sending poll update
-
-//      if (buttons != 0xFFFF) printButtons();
-
-      if (cmd == 0x00) cmd = sendByte((buttons << 8) >> 8); // Buttons part 1
-      if (cmd == 0x00) cmd = sendByte(buttons >> 8); // Buttons part 2
-      
-      if (cmd == 0x00) cmd = sendByte(rx); // Right Joy X-Axis
-      if (cmd == 0x00) cmd = sendByte(ry); // Right Joy Y-Axis
-      if (cmd == 0x00) cmd = sendByte(lx); // Left Joy X-Axis
-      if (cmd == 0x00) cmd = sendByte(ly, false); // Left Joy Y-Axis
-      
-      break;
-    default:
-      Serial.print("Unknown Command: ");
-      printByte(cmd);
-      break;
-    case 0x00: // NOP?
-    case 0x01: // Init (should have already been handled...)
-    case 0x43: // Config Mode (But also poll)
-    case 0x4D: // Enable Rumble
-    case 0xFF: // NOP?
-      if (cmd != 0x43) {
-        Serial.print("Ignoring Command: ");
-        printByte(cmd);
-      }
-      break;
-  }
 }
 
 void updateController() {
@@ -173,8 +183,10 @@ void updateButtons() {
 
 void updateTimer() {
   if (~buttons & PSB_L2) {
-    Serial.println("TIMER");
-    printButtons();
+    if (DEBUG_PRINT) {
+      Serial.println("TIMER");
+      printButtons();
+    }
     
     if (millis() - timer > 80) {
       turboX = !turboX;
@@ -189,7 +201,6 @@ void updateTimer() {
 }
 
 void loop (void) {
-  updateCmd();
   updateController();
   updateTimer();
 
