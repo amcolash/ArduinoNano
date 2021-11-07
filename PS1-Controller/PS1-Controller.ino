@@ -21,7 +21,6 @@ PsxControllerBitBang<ATT_PIN, CMD_PIN, DAT_PIN, CLK_PIN> psx;
 #define DATA_BUFFER_SIZE 7
 byte dataBuffer[DATA_BUFFER_SIZE];
 uint8_t dataBufferIndex = 0;
-bool willAck = false;
 
 uint16_t buttons;
 byte lx, ly, rx, ry;
@@ -30,6 +29,9 @@ bool haveController = false;
 
 long timer;
 bool turboX;
+
+byte lastCmd;
+bool configMode = false;
 
 bool readingCard = false;
 unsigned long readingTimer;
@@ -51,30 +53,50 @@ ISR (SPI_STC_vect) {
 
   SPDR = 0xFF;
 
-  if (cmd == 0x01) {
-    clearBuffer();
-    dataBuffer[0] = 0x73;
-    
-    willAck = true;
-  } else if (cmd == 0x42) {
-    dataBuffer[0] = 0x5A;
-    dataBuffer[1] = (buttons << 8) >> 8;
-    dataBuffer[2] = buttons >> 8;
-    dataBuffer[3] = rx;
-    dataBuffer[4] = ry;
-    dataBuffer[5] = lx;
-    dataBuffer[6] = ly;
+  if (lastCmd == 0x43) {
+    configMode = cmd;
+//    Serial.print("Config Mode: ");
+//    Serial.println(configMode);
+  } else {
+    if (cmd == 0x01) {
+      clearBuffer();
+      dataBuffer[0] = 0x73;
 
-    dataBufferIndex = 0;
-    willAck = true;
-  } else if (cmd != 0x00) {
-    clearBuffer();
-    willAck = false;
+    } else if (cmd == 0x42 || cmd == 0x43) {
+      clearBuffer();
+      dataBuffer[0] = 0x5A;
 
-    Serial.print("Unknown command: ");
-    printByte(cmd);
-    return;
+      // Unsure if this is necessary or just overcomplicating things
+      if (cmd == 0x42 || !configMode) {
+        dataBuffer[1] = (buttons << 8) >> 8;
+        dataBuffer[2] = buttons >> 8;
+        dataBuffer[3] = rx;
+        dataBuffer[4] = ry;
+        dataBuffer[5] = lx;
+        dataBuffer[6] = ly;
+      }
+
+      dataBufferIndex = 0;
+    } else if (cmd == 0x45) {
+      dataBuffer[0] = 0x5A;
+      dataBuffer[1] = 0x01; // Controller id
+      dataBuffer[2] = 0x02;
+      dataBuffer[3] = 0x01; // Analog on/off
+      dataBuffer[4] = 0x02;
+      dataBuffer[5] = 0x01;
+      dataBuffer[6] = 0x00;
+
+      dataBufferIndex = 0;
+    } else if (cmd != 0x00) {
+      clearBuffer();
+
+      Serial.print("Unknown command: ");
+      printByte(cmd);
+      return;
+    }
   }
+
+  lastCmd = cmd;
 
   // ACK
   if (dataBufferIndex < DATA_BUFFER_SIZE) {
