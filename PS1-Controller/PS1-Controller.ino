@@ -53,16 +53,16 @@ ISR (SPI_STC_vect) {
 
   SPDR = 0xFF;
 
+  // TODO: Add in a "firstCommand" which is always immediately after 0x01 or 0x81 - this MUST be the first of the header and use a timer to keep track of it
+
   if (lastCmd == 0x43) {
     configMode = cmd;
-//    Serial.print("Config Mode: ");
-//    Serial.println(configMode);
   } else {
-    if (cmd == 0x01) {
+    if (cmd == 0x01) { // Using controller
       clearBuffer();
       dataBuffer[0] = 0x73;
 
-    } else if (cmd == 0x42 || cmd == 0x43) {
+    } else if (cmd == 0x42 || cmd == 0x43) { // Poll / Config Mode
       clearBuffer();
       dataBuffer[0] = 0x5A;
 
@@ -77,7 +77,7 @@ ISR (SPI_STC_vect) {
       }
 
       dataBufferIndex = 0;
-    } else if (cmd == 0x45) {
+    } else if (cmd == 0x45) { // Status
       dataBuffer[0] = 0x5A;
       dataBuffer[1] = 0x01; // Controller id
       dataBuffer[2] = 0x02;
@@ -87,6 +87,9 @@ ISR (SPI_STC_vect) {
       dataBuffer[6] = 0x00;
 
       dataBufferIndex = 0;
+    } else if (cmd == 0x4D) { // Configure rumble
+      clearBuffer();
+      dataBuffer[0] = 0x5A;
     } else if (cmd != 0x00) {
       clearBuffer();
 
