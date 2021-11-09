@@ -5,9 +5,9 @@
 #define DEBUG_PRINT true
 
 #define LED_PIN 2
-#define READY_PIN 3
 
 // Pins to be used for output to ps1
+#define SS_DUPE_PIN 3 // Trigger an interrupt when SS changes state
 #define ACK_PIN 9
 
 // Pins to be used for input from controller
@@ -19,33 +19,41 @@
 PsxControllerBitBang<ATT_PIN, CMD_PIN, DAT_PIN, CLK_PIN> psx;
 
 #define DATA_BUFFER_SIZE 7
-byte dataBuffer[DATA_BUFFER_SIZE];
 uint8_t dataBufferIndex = 0;
+byte dataBuffer[DATA_BUFFER_SIZE];
 
 uint16_t buttons;
 byte lx, ly, rx, ry;
 
 bool haveController = false;
 
-long timer;
+long turboTimer;
 bool turboX;
 
-byte lastCmd;
+uint8_t cmdIndex = 0;
+
 bool configMode = false;
 
 bool readingCard = false;
-unsigned long readingTimer;
+
+void spiStateChange() {
+  cmdIndex = 0;
+  
+  bool ss_enabled = !fastDigitalRead(SS_DUPE_PIN);
+
+  // Reset things when we exit SS and were previously reading a memory card
+  if (!ss_enabled && readingCard) {
+    enableOutput();
+  }
+}
 
 ISR (SPI_STC_vect) {
   byte cmd = SPDR;
+  cmdIndex++;
 
   // Turn off output when card starts being read
-  if (!readingCard && (cmd == 0x52 || cmd == 0x57 || cmd == 0x81)) {
+  if (!readingCard && cmd == 0x81) {
     disableOutput();
-  } else if (readingCard && !(cmd == 0x01 || cmd == 0x42)) {
-    // Keep resetting the read timer while card continues to be read
-    // Later on we will turn output back on 2ms after last read in loop()
-    readingTimer = micros();
   }
   
   // Never go further when card is being accessed
@@ -53,53 +61,48 @@ ISR (SPI_STC_vect) {
 
   SPDR = 0xFF;
 
-  // TODO: Add in a "firstCommand" which is always immediately after 0x01 or 0x81 - this MUST be the first of the header and use a timer to keep track of it
+  if (cmd == 0x01) { // Using controller
+    clearBuffer();
+    dataBuffer[0] = 0x73;
 
-  if (lastCmd == 0x43) {
-    configMode = cmd;
-  } else {
-    if (cmd == 0x01) { // Using controller
-      clearBuffer();
-      dataBuffer[0] = 0x73;
+  } else if (cmd == 0x42) { // || cmd == 0x43) { // Poll / Config Mode
+    clearBuffer();
+    dataBuffer[0] = 0x5A;
 
-    } else if (cmd == 0x42 || cmd == 0x43) { // Poll / Config Mode
-      clearBuffer();
-      dataBuffer[0] = 0x5A;
+    // Unsure if this is necessary or just overcomplicating things
+//      if (cmd == 0x42 || !configMode) {
+      dataBuffer[1] = (buttons << 8) >> 8;
+      dataBuffer[2] = buttons >> 8;
+      dataBuffer[3] = rx;
+      dataBuffer[4] = ry;
+      dataBuffer[5] = lx;
+      dataBuffer[6] = ly;
+//      }
 
-      // Unsure if this is necessary or just overcomplicating things
-      if (cmd == 0x42 || !configMode) {
-        dataBuffer[1] = (buttons << 8) >> 8;
-        dataBuffer[2] = buttons >> 8;
-        dataBuffer[3] = rx;
-        dataBuffer[4] = ry;
-        dataBuffer[5] = lx;
-        dataBuffer[6] = ly;
-      }
+    dataBufferIndex = 0;
+//    } else if (cmd == 0x45) { // Status
+//      dataBuffer[0] = 0x5A;
+//      dataBuffer[1] = 0x01; // Controller id
+//      dataBuffer[2] = 0x02;
+//      dataBuffer[3] = 0x01; // Analog on/off
+//      dataBuffer[4] = 0x02;
+//      dataBuffer[5] = 0x01;
+//      dataBuffer[6] = 0x00;
+//
+//      dataBufferIndex = 0;
+//    } else if (cmd == 0x4D) { // Configure rumble
+//      clearBuffer();
+//      dataBuffer[0] = 0x5A;
+  } else if (cmd != 0x00) {
+    clearBuffer();
 
-      dataBufferIndex = 0;
-    } else if (cmd == 0x45) { // Status
-      dataBuffer[0] = 0x5A;
-      dataBuffer[1] = 0x01; // Controller id
-      dataBuffer[2] = 0x02;
-      dataBuffer[3] = 0x01; // Analog on/off
-      dataBuffer[4] = 0x02;
-      dataBuffer[5] = 0x01;
-      dataBuffer[6] = 0x00;
-
-      dataBufferIndex = 0;
-    } else if (cmd == 0x4D) { // Configure rumble
-      clearBuffer();
-      dataBuffer[0] = 0x5A;
-    } else if (cmd != 0x00) {
-      clearBuffer();
-
+    if (cmd != 0x43) {
       Serial.print("Unknown command: ");
       printByte(cmd);
-      return;
     }
+    
+    return;
   }
-
-  lastCmd = cmd;
 
   // ACK
   if (dataBufferIndex < DATA_BUFFER_SIZE) {
@@ -119,7 +122,6 @@ void disableOutput() {
   fastPinMode(ACK_PIN, INPUT);
   
   readingCard = true;
-  readingTimer = micros() + 5000; // Add some buffer since the init of the memory card can take a moment
 }
 
 // Renable input after card read
@@ -148,10 +150,12 @@ void setup (void) {
   fastPinMode(MISO, OUTPUT);
   fastPinMode(SS, INPUT);
 
+  fastPinMode(SS_DUPE_PIN, INPUT);
+  attachInterrupt(digitalPinToInterrupt(SS_DUPE_PIN), spiStateChange, CHANGE);
+
   fastPinMode(ACK_PIN, OUTPUT);
   fastDigitalWrite(ACK_PIN, HIGH);
 
-  fastPinMode(READY_PIN, OUTPUT);
   fastPinMode(LED_PIN, OUTPUT);
   
   for (int i = 0; i < 3; i++) {
@@ -160,8 +164,6 @@ void setup (void) {
     fastDigitalWrite(LED_PIN, LOW);
     delay(50);
   }
-
-  fastDigitalWrite(READY_PIN, LOW);
   
   // turn on SPI in slave mode
   SPCR = _BV(SPE) | _BV(DORD) | _BV(SPR0) | ~_BV(MSTR);
@@ -220,9 +222,9 @@ void updateButtons() {
 
 void updateTimer() {
   if (~buttons & PSB_L2) {
-    if (millis() - timer > 80) {
+    if (millis() - turboTimer > 80) {
       turboX = !turboX;
-      timer = millis();
+      turboTimer = millis();
     }
 
     if (turboX) buttons |= PSB_CROSS;
@@ -235,9 +237,4 @@ void updateTimer() {
 void loop (void) {
   updateController();
   updateTimer();
-
-  // If card was being read and we haven't seen activity in 5ms, re-enable output to the bus
-  if (readingCard && micros() - readingTimer > 4000) {
-    enableOutput();
-  }
 }
