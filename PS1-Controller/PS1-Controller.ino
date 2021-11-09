@@ -3,6 +3,8 @@
 #include <SPI.h>
 
 #define DEBUG_PRINT true
+// Cannot seem to get config mode working with Digimon World 3, oh well - emulate with d-pad buttons
+#define CONFIG_MODE_ENABLE false
 
 #define LED_PIN 2
 
@@ -38,7 +40,7 @@ bool readingCard = false;
 bool configMode = false;
 
 uint8_t cmdIndex = 0;
-byte currentCmd;
+byte currentCmd = 0xFF;
 
 /** Interrupt Handlers */
 
@@ -79,7 +81,7 @@ ISR (SPI_STC_vect) {
       dataBuffer[0] = 0x73;
     }
   } else if (cmdIndex == 1) {
-    if (cmd == 0x42 || cmd == 0x43) { // Poll / Config Mode
+    if (cmd == 0x42 || (cmd == 0x43 && CONFIG_MODE_ENABLE)) { // Poll / Config Mode
       clearBuffer();
       dataBuffer[0] = 0x5A;
   
@@ -96,7 +98,7 @@ ISR (SPI_STC_vect) {
       dataBufferIndex = 0;
     } else if (cmd == 0x45) { // Status
       dataBuffer[0] = 0x5A;
-      dataBuffer[1] = 0x01; // Controller id
+      dataBuffer[1] = 0x03; // Controller id
       dataBuffer[2] = 0x02;
       dataBuffer[3] = 0x01; // Analog on/off
       dataBuffer[4] = 0x02;
@@ -107,7 +109,7 @@ ISR (SPI_STC_vect) {
     } else if (cmd == 0x4D) { // Configure rumble
       clearBuffer();
       dataBuffer[0] = 0x5A;
-    } else {
+    } else if (cmd != 0x00) {
       clearBuffer();
   
       Serial.print("Unknown command: ");
@@ -115,7 +117,6 @@ ISR (SPI_STC_vect) {
       
       return;
     }
-  // Handle commands that modify state here
   } else {
     if (currentCmd == 0x42 && (cmdIndex == rumble1Index || cmdIndex == rumble2Index)) {
       if (cmdIndex == rumble1Index) rumble1 = cmd;
@@ -126,6 +127,7 @@ ISR (SPI_STC_vect) {
       if (cmd == 0x00) rumble1Index = cmdIndex;
       if (cmd == 0x01) rumble2Index = cmdIndex;
     }
+    // Handle commands that modify state here
   }
 
   // ACK
@@ -139,7 +141,7 @@ ISR (SPI_STC_vect) {
   if (dataBufferIndex < DATA_BUFFER_SIZE) SPDR = dataBuffer[dataBufferIndex];
   dataBufferIndex = constrain(dataBufferIndex + 1, 0, DATA_BUFFER_SIZE);
 
-  // Increment cmdIndex after handled
+  // Increment cmdIndex
   cmdIndex++;
 }
 
@@ -188,6 +190,14 @@ void updateButtons() {
   buttons = ~psx.getButtonWord();
   psx.getLeftAnalog (lx, ly);
   psx.getRightAnalog (rx, ry);
+
+  if (!CONFIG_MODE_ENABLE) {
+    if (lx < 64) buttons &= ~PSB_PAD_LEFT;
+    if (lx > 192) buttons &= ~PSB_PAD_RIGHT;
+
+    if (ly < 64) buttons &= ~PSB_PAD_UP;
+    if (ly > 192) buttons &= ~PSB_PAD_DOWN;
+  }
 }
 
 void updateController() {
@@ -198,6 +208,9 @@ void updateController() {
 
       Serial.print("Entering config mode: ");
       Serial.println(psx.enterConfigMode());
+
+      Serial.print("Enabling analog sticks:");
+      Serial.println(psx.enableAnalogSticks());
 
       Serial.print("Enabling rumble: ");
       Serial.println(psx.enableRumble());
