@@ -1,6 +1,7 @@
 #include <Adafruit_NeoPixel.h>
 #include "Adafruit_WS2801.h"
 #include "ClickButton.h"
+#include <Wire.h>
 
 struct Section {
   uint8_t DATA_PIN;
@@ -65,7 +66,13 @@ ClickButton toggleButton(BUTTON_PIN, LOW, CLICKBTN_PULLUP);
 
 Section sections[NUM_SECTIONS];
 
+#define BRIGHTNESS_STEP_UP 3
+#define BRIGHTNESS_STEP_DOWN 12
+
 bool on = true;
+uint8_t targetBrightness = 255;
+uint8_t brightness = targetBrightness;
+
 int mode = Standard;
 unsigned long startMS = millis();
 
@@ -73,11 +80,17 @@ unsigned long startMS = millis();
 int delayCount = 0;
 uint16_t rainbowCycle;
 
+// I2C
+uint8_t address = 0x03;
+
 /* Main code */
 
 
 void setup() {
   Serial.begin(9600);
+
+  Wire.begin(address);
+  Wire.onReceive(onRecieve);
 
   initSection(NUM_PIXELS_A, colorsA, &stripA, NULL, 0);
   initSection(NUM_PIXELS_B, colorsB, &stripB, NULL, 1);
@@ -89,6 +102,11 @@ void loop() {
   updateButtons();
   
   if (millis() - startMS > 60) {
+
+    // Handle fading on/off if the brightness does not match target value
+    if (on && brightness < targetBrightness) brightness = constrain(brightness + BRIGHTNESS_STEP_UP, 0, targetBrightness);
+    if ((!on && brightness > 0) || brightness > targetBrightness) brightness = constrain(brightness - BRIGHTNESS_STEP_DOWN, 0, 255);
+    
     startMS = millis();
     for (int i = 0; i < NUM_SECTIONS; i++) {
       updateSection(i);
@@ -96,6 +114,33 @@ void loop() {
 
     delayCount = max(0, delayCount - 1);
     rainbowCycle += 1000;
+  }
+}
+
+void onRecieve(int numBytes) {
+  bool handled = false;
+  
+  while(Wire.available()) {
+    if (!handled) {
+      // Address Mapping
+
+      // 0 - Mode
+      // 1 - Power (On/Off)
+      // 2 - Brightness
+      
+      uint8_t address = Wire.read();
+      uint8_t value = Wire.read();
+  
+      if (address == 0) {
+        if (value < ModeLength) updateMode(value, 15);
+      } else if (address == 1) {
+        on = value;
+      } else if (address == 2) {
+        targetBrightness = value;
+      }
+
+      handled = true;
+    }
   }
 }
 
@@ -177,7 +222,8 @@ void updateSection(uint8_t sectionIndex) {
   }
 
   for (int i = 0; i < section->NUM_PIXELS; i++) {
-    uint32_t color = on ? section->colors[i] : 0;
+    // Adjust color brightness (for fading on/off)
+    uint32_t color = adjustBrightness(section->colors[i]);
     
     if (section->strip != NULL) section->strip->setPixelColor(i, color);
     else if (section->strip2812 != NULL) section->strip2812->setPixelColor(i, color);
@@ -199,28 +245,36 @@ void updateButtons() {
   }
 
   if (toggleButton.clicks == -1) {
-    mode = (mode + 1) % ModeLength;
-
-    uint32_t color;
-    switch(mode) {
-      case Standard:
-        color = Color(0, 70, 40);
-        break;
-      case RainbowPastel:
-        color = Color(70, 30, 30);
-        break;
-      case Rainbow:
-        color = Color(80, 50, 0);
-        break;
-    }
-
-    for (int i = 0; i < NUM_SECTIONS; i++) {
-      fill(sections[i].colors, sections[i].NUM_PIXELS, color);
-      randomColor(sections[i].color);
-    }
-
-    delayCount = 30;
+    updateMode(mode + 1);
   }
+}
+
+void updateMode(uint8_t newMode) {
+  updateMode(newMode, 30);
+}
+
+void updateMode(uint8_t newMode, uint8_t delay) {
+  mode = newMode % ModeLength;
+  
+  uint32_t color;
+  switch(mode) {
+    case Standard:
+      color = Color(0, 70, 40);
+      break;
+    case RainbowPastel:
+      color = Color(70, 30, 30);
+      break;
+    case Rainbow:
+      color = Color(80, 50, 0);
+      break;
+  }
+
+  for (int i = 0; i < NUM_SECTIONS; i++) {
+    fill(sections[i].colors, sections[i].NUM_PIXELS, color);
+    randomColor(sections[i].color);
+  }
+
+  delayCount = delay;
 }
 
 float generateFrequency(uint8_t NUM_PIXELS) {
@@ -289,6 +343,19 @@ uint32_t Color(byte r, byte b, byte g)
   c <<= 8;
   c |= b;
   return c;
+}
+
+uint32_t adjustBrightness(uint32_t color) {
+  uint8_t r,g,b;
+  r = color >> 16;
+  g = color >> 8;
+  b = color;
+
+  r = map(r, 0, 255, 0, brightness);
+  g = map(g, 0, 255, 0, brightness);
+  b = map(b, 0, 255, 0, brightness);
+
+  return Color(r, g, b);
 }
 
 //Input a value 0 to 255 to get a color value.
